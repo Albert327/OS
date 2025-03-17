@@ -154,3 +154,166 @@ int main(int argc, char *argv[]) {
   closedir(srcdir);
   return 0;
 }
+
+
+
+
+#include <stdio.h>
+#include <stdlib.h>
+#include <assert.h>
+#include <unistd.h>
+#include <sys/stat.h>
+#include <sys/types.h>
+#include <dirent.h>
+#include <string.h>
+#include <getopt.h>
+
+// 进程结构体，存储进程信息
+typedef struct {
+	char name[1024];
+	pid_t pid;
+	pid_t* children;
+	int child_num;
+} proc;
+
+// 递归打印进程树
+void PrintTree(proc* p, proc* procs, int depth, int pflag) {
+	if (depth > 0) {
+		printf("\n%*s |\n", (depth - 1) * 4, "");
+		printf("%*s", (depth - 1) * 4, "");
+		printf(" +--");
+	}
+	printf("%s", p->name);
+	if (pflag) {
+		printf("(%d)", p->pid);
+	}
+	for (int i = 0; i < p->child_num; ++i) {
+		proc* tmp = procs;
+		while (tmp != NULL) {
+			if (tmp->pid == p->children[i]) {
+				break;
+			}
+			++tmp;
+		}
+		PrintTree(tmp, procs, depth + 1, pflag);
+	}
+}
+
+int main(int argc, char *argv[]) {
+  // 解析命令行参数
+  char c;
+  int nflag = 0, pflag = 0, vflag = 0;
+  struct option long_options[] = {
+	{"show-pids", no_argument, &pflag, 1},
+	{"numeric-sort", no_argument, &nflag, 1},
+	{"version", no_argument, &vflag, 1},
+	{0, 0, 0, 0}
+  };
+
+    while ((c = getopt_long(argc, argv, "npV", long_options, NULL)) != -1) {
+        switch (c) {     
+            case 'n':
+	  	nflag = 1;
+	  	break;
+	    case 'p':
+	  	pflag = 1;
+		break;
+	    case 'V':
+		vflag = 1;
+		break;
+            case 0:
+                break;
+            case '?':
+                printf("Unknown option: %s\n", argv[optind-1]);
+                return 1;
+            default:
+                printf("Unexpected option: %c\n", c);
+                return 1;
+        }
+    }
+
+  if (vflag) {
+  	printf("一个简单的 pstree by CY\n");
+	return 0;
+  }
+
+  // 读取最大进程号
+  FILE* pid_max_f = fopen("/proc/sys/kernel/pid_max", "r");
+  if (pid_max_f == NULL) {
+  	perror("无法获取最大进程号");
+	return -1;
+  }
+  int pid_max;
+  fscanf(pid_max_f, "%d", &pid_max);
+  fclose(pid_max_f);
+
+  char* base_path = "/proc";
+  struct dirent* dent;
+  DIR* srcdir = opendir(base_path);
+  if (srcdir == NULL) {
+  	perror("无法打开 /proc 目录");
+	return -1;
+  }
+
+  // 初始化进程数组
+  proc* procs;
+  procs = malloc(sizeof(proc) * (pid_max + 1));
+  pid_t* ppids;
+  ppids = malloc(sizeof(pid_t) * pid_max);
+  proc* p = procs;
+  
+  // 读取 /proc 目录下的进程信息
+  while ((dent = readdir(srcdir)) != NULL) {
+	if (dent->d_name[0] < '0' || dent->d_name[0] > '9') {
+		continue;
+	}
+	// 保存进程 ID
+	p->pid = atoi(dent->d_name);
+	
+	// 读取 stat 文件获取进程名和父进程 ID
+	char path[13 + strlen(dent->d_name) + 1], buf[1024];
+	memset(path, 0, sizeof(path));
+	strcat(path, base_path);
+	strcat(path, "/");
+	strcat(path, dent->d_name);
+	strcat(path, "/status");
+	FILE* f = fopen(path, "r");
+	while ((fscanf(f, "%s", buf) != EOF)) {
+		if (strcmp(buf, "Name:") == 0) {
+			fscanf(f, "%s", p->name);
+		}
+		if (strcmp(buf, "PPid:") == 0) {
+			fscanf(f, "%d", &ppids[p - procs]);
+		}
+	}
+	fclose(f);
+	++p;
+  }
+  int proc_count = p - procs;
+  printf("总进程数: %d\n", proc_count);
+
+  // 构建进程树
+  for (int i = 0; i < proc_count; ++i) {
+  	procs[i].children = malloc(sizeof(pid_t) * proc_count);
+	procs[i].child_num = 0;
+  }
+
+  for (int i = 0; i < proc_count; ++i) {
+	for (int j = 0; j < proc_count; ++j) {
+		if (ppids[j] == procs[i].pid) {
+			procs[i].children[procs[i].child_num++] = procs[j].pid;
+		}
+	}
+  }
+
+  // 输出进程树
+  for (int i = 0; i < proc_count; ++i) {
+	  if (ppids[i] == 0) {
+	  	PrintTree(&procs[i], procs, 0, pflag);
+	  }
+  }
+  printf("\n");
+
+  closedir(srcdir);
+  return 0;
+}
